@@ -1,0 +1,98 @@
+@startuml Algorithm – estimateCup Pipeline
+skinparam activityFontSize 13
+skinparam noteFontSize 11
+skinparam backgroundColor #FEFEFE
+skinparam activity {
+  BackgroundColor #E3F2FD
+  BorderColor #1565C0
+  DiamondBackgroundColor #FFF9C4
+  DiamondBorderColor #F9A825
+}
+
+title Stereo Cup Volume Estimation – Activity Diagram
+
+|#E8F5E9| Input |
+start
+:Load **StereoCalibration**\nfrom YAML file;
+:Read **left** & **right** image;
+
+|#E3F2FD| Validation |
+:validateParams(params);
+if (params valid?) then (yes)
+else (no)
+  #FFCDD2:return **nullopt**;
+  stop
+endif
+
+|#E3F2FD| Rectification |
+:remap(left)  → **leftRect**\nremap(right) → **rightRect**;
+note right
+  Uses pre-computed
+  undistort + rectify maps
+  (map1x/y, map2x/y)
+end note
+
+|#E3F2FD| Stereo Matching |
+:cvtColor → **grayL**, **grayR**;
+:StereoSGBM::compute\n→ **disparity** (16-bit fixed);
+:convertTo float\n(÷ 16);
+
+|#E3F2FD| Depth Reconstruction |
+:reprojectImageTo3D\n(disparity, Q) → **points3D**;
+:Extract Z channel → **depthMap**\n(NaN for invalid / z ≤ 0);
+
+|#FFF3E0| Rim Detection |
+:medianBlur(**grayL**);
+:HoughCircles\n→ circles[];
+if (circle found?) then (yes)
+  :Pick best circle\n**(cx, cy, r_px)**;
+else (no)
+  #FFCDD2:return **nullopt**;
+  stop
+endif
+
+|#F3E5F5| Rim Measurement |
+:clampRoi around rim circle\n→ **rimRoi**;
+:robustPlaneDepthMm\n(depthMap, rimRoi)\n→ **rimDepth**;
+note right
+  Filters NaN & out-of-range,
+  then takes **median**
+end note
+if (rimDepth finite?) then (yes)
+else (no)
+  #FFCDD2:return **nullopt**;
+  stop
+endif
+
+:estimateRadiusMmFromDepth\nr_mm = (r_px × depth) / f_x\n→ **rimRadiusMm**;
+if (rimRadiusMm > 0?) then (yes)
+else (no)
+  #FFCDD2:return **nullopt**;
+  stop
+endif
+
+|#F3E5F5| Bottom Measurement |
+:clampRoi at circle centre\n(30% of r_px) → **bottomRoi**;
+:robustPlaneDepthMm\n(depthMap, bottomRoi)\n→ **bottomDepth**;
+if (bottomDepth finite?) then (yes)
+else (no)
+  #FFCDD2:return **nullopt**;
+  stop
+endif
+
+|#E8F5E9| Volume Calculation |
+:heightMm = |bottomDepth − rimDepth|;
+:bottomRadiusMm = rimRadiusMm × bottomFraction;
+:frustumVolumeMl\nV = (π h / 3)(R² + Rr + r²) / 1000\n→ **volumeMl**;
+
+|#E8F5E9| Output |
+:Return **CupMeasurement**
+  ── volumeMl
+  ── rimRadiusMm
+  ── bottomRadiusMm
+  ── heightMm
+  ── rimDepthMm
+  ── rimCirclePx;
+stop
+
+@enduml
